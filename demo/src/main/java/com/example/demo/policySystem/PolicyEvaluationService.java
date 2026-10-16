@@ -18,17 +18,15 @@ public class PolicyEvaluationService {
     @Autowired
     private PolicyTreeCache treeCache;
 
+    @Autowired
+    private PolicyActionApplier policyActionApplier;
 
     public void process(List<CaseItem> caseItemList) {
         for (CaseItemEntity caseItem : caseItemList) {
             CaseItemContext ctx = buildContext(caseItem);
 
             Optional<Policy> matchedPolicy = evaluateFirstMatch("TRIAGE" ,ctx);
-
-            matchedPolicy.ifPresent(policy -> policy.getActions().forEach(action -> {
-                PropertyAccessorFactory.forBeanPropertyAccess(caseItem)
-                        .setPropertyValue(action.getOutputParamName(), action.getOutputValue());
-            }));
+            matchedPolicy.ifPresent(policy -> policyActionApplier.applyActions(caseItem, policy.getActions()));
         }
     }
 

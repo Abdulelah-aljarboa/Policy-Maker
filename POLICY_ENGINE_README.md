@@ -26,8 +26,7 @@ applied. No further policies are evaluated for that case item.
   `A AND B OR (C AND D)` is expressible, not just a flat list.
 - Users can **reorder policies** and reorder/add/remove rules within a
   policy, at runtime, through a UI.
-- Policies can target **different systems** (e.g. Rased vs. a second
-  downstream system) independently.
+- Policies can target **different systems** (e.g. Fraud, Triage, or a new system) independently.
 - Policies support a **draft → test → publish** lifecycle so a user can try a
   policy against sample data before it affects real case items.
 - Actions are **not limited to "set a field"** — the system supports
@@ -91,20 +90,6 @@ ambiguous without precedence rules).
 
 ### 3.2 Database schema
 
-> **Implementation note:** the actual JPA entities (`Policy`, `RuleGroup`,
-> `Rule`, `RuleValue`, `Param`, `ParamOperator`, `PolicyAction`,
-> `PolicyActionParam`) use **Lombok** (`@Getter`/`@Setter`/`@Builder`/
-> `@NoArgsConstructor`/`@AllArgsConstructor`, `@RequiredArgsConstructor` on
-> services) and **sequence-based ID generation**
-> (`GenerationType.SEQUENCE` with a per-entity Oracle sequence and a tuned
-> `allocationSize`), not `IDENTITY`. This matters specifically because
-> Hibernate disables JDBC insert batching for `IDENTITY`-generated keys (it
-> must flush immediately to retrieve each key), which would quietly hurt
-> bulk-insert performance. `SEQUENCE` lets Hibernate pre-allocate a block of
-> IDs per round trip and batch inserts freely — see `sequences.sql` for the
-> DDL, which must keep each sequence's `INCREMENT BY` in sync with the
-> matching `@SequenceGenerator(allocationSize = ...)` in code.
-
 ```sql
 CREATE TABLE policy (
     id            NUMBER PRIMARY KEY,
@@ -116,6 +101,8 @@ CREATE TABLE policy (
     active        NUMBER(1) DEFAULT 1,
     root_group_id NUMBER NOT NULL          -- FK to rule_group, entry point of the tree
 );
+
+CREATE UNIQUE INDEX uq_policy_system_order ON policy (system_code, order_index);
 
 CREATE TABLE rule_group (
     id              NUMBER PRIMARY KEY,
@@ -183,64 +170,6 @@ CREATE TABLE policy_action_param (
     param_value VARCHAR2(500) NOT NULL,
     CONSTRAINT fk_pap_action FOREIGN KEY (action_id) REFERENCES policy_action(id)
 );
-
-CREATE UNIQUE INDEX uq_policy_system_order ON policy (system_code, order_index);
-```
-
-### 3.2.1 `PolicyAction` / `PolicyActionParam` entities
-
-```java
-@Entity
-@Table(name = "policy_action")
-@Getter @Setter @NoArgsConstructor @AllArgsConstructor @Builder
-public class PolicyAction {
-    @Id
-    @GeneratedValue(strategy = GenerationType.SEQUENCE, generator = "policy_action_seq")
-    @SequenceGenerator(name = "policy_action_seq", sequenceName = "policy_action_id_seq", allocationSize = 20)
-    private Long id;
-
-    @ManyToOne @JoinColumn(name = "policy_id", nullable = false)
-    private Policy policy;
-
-    @Column(name = "action_type", nullable = false)
-    private String actionType;
-
-    private String outputParamName; // used by SET_FIELD
-    private String outputValue;     // used by SET_FIELD
-
-    @OneToMany(mappedBy = "action", cascade = CascadeType.ALL, orphanRemoval = true)
-    @Builder.Default
-    private List<PolicyActionParam> params = new ArrayList<>();
-
-    public Optional<String> getParam(String key) {
-        return params.stream().filter(p -> p.getParamKey().equals(key))
-            .map(PolicyActionParam::getParamValue).findFirst();
-    }
-
-    public void addParam(String key, String value) {
-        PolicyActionParam p = new PolicyActionParam();
-        p.setAction(this);
-        p.setParamKey(key);
-        p.setParamValue(value);
-        params.add(p);
-    }
-}
-
-@Entity
-@Table(name = "policy_action_param")
-@Getter @Setter @NoArgsConstructor @AllArgsConstructor @Builder
-public class PolicyActionParam {
-    @Id
-    @GeneratedValue(strategy = GenerationType.SEQUENCE, generator = "policy_action_param_seq")
-    @SequenceGenerator(name = "policy_action_param_seq", sequenceName = "policy_action_param_id_seq", allocationSize = 20)
-    private Long id;
-
-    @ManyToOne @JoinColumn(name = "action_id", nullable = false)
-    private PolicyAction action;
-
-    private String paramKey;
-    private String paramValue;
-}
 ```
 
 ### 3.3 Example: expressing `(X AND Y) OR (Z AND (W OR V))`
@@ -478,13 +407,6 @@ anywhere in a policy's tree only ever skips *that policy* — logged loudly —
 never the whole batch and never the other policies in the list. No
 try/catch is needed inside `GroupNode` or `LeafNode` themselves.
 
-### 4.8 Wiring into the scheduled job
-
-Per the existing `rased-scheduled-job` design (non-`@Transactional`
-`@Scheduled` method; `processChunk` in a separate bean with
-`Propagation.REQUIRES_NEW`), evaluation happens inside `processChunk`, once
-per case item, right after enrichment data is assembled and right before the
-`InspectionRequest` is built for the JMS send:
 
 ```java
 @Transactional(propagation = Propagation.REQUIRES_NEW)
