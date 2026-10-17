@@ -413,11 +413,10 @@ try/catch is needed inside `GroupNode` or `LeafNode` themselves.
 public void processChunk(List<CaseItemEntity> caseItems) {
     for (CaseItemEntity caseItem : caseItems) {
         CaseItemContext ctx = buildContext(caseItem);
-        Optional<Policy> matched = policyEvaluationService.evaluateFirstMatch("RASED", ctx);
-
-        InspectionRequest request = buildBaseInspectionRequest(caseItem);
+        Optional<Policy> matched = policyEvaluationService.evaluateFirstMatch("TRIAGE", ctx);
+        
         matched.ifPresent(policy ->
-            policyActionApplier.applyActions(request, caseItem, policy.getActions()));
+            policyActionApplier.applyActions(caseItem, policy.getActions()));
 
         // existing groupId-commit + JMS send logic follows
     }
@@ -437,7 +436,7 @@ changes** to the evaluation engine — just a new `@Component`.
 ```java
 public interface PolicyActionHandler {
     String getActionType(); // e.g. "SET_FIELD", "ASSIGN_USER"
-    void apply(InspectionRequest request, CaseItemEntity caseItem, PolicyAction action);
+    void apply(CaseItemEntity caseItem, PolicyAction action);
 }
 ```
 
@@ -464,7 +463,7 @@ public class PolicyActionApplier {
             .collect(Collectors.toMap(PolicyActionHandler::getActionType, h -> h));
     }
 
-    public void applyActions(InspectionRequest request, CaseItemEntity caseItem, List<PolicyAction> actions) {
+    public void applyActions(CaseItemEntity caseItem, List<PolicyAction> actions) {
         for (PolicyAction action : actions) {
             PolicyActionHandler handler = handlersByType.get(action.getActionType());
             if (handler == null) {
@@ -650,7 +649,7 @@ entity/param/operator/value all block submission with an inline message.
 
 ## 8. Multiple downstream systems
 
-`Policy.systemCode` scopes a policy to exactly one system (e.g. `RASED`,
+`Policy.systemCode` scopes a policy to exactly one system (e.g. `TRAIGE`, `FRAUD`,
 or a second system's code). `order_index` is unique **per system**
 (`UNIQUE (system_code, order_index)`), so each system has its own
 independent priority ordering — they never compete.
@@ -771,10 +770,10 @@ dropdowns in one call.
 - **`ParamMetaDto`** — `id`, `entityName`, `paramName`, `paramType`,
   `allowedOperators: List<String>`.
 
-### 10.3 `PolicyMapper` — single place for DTO ↔ entity conversion
+### 10.3 `PolicyAssembler` — single place for DTO ↔ entity conversion
 
 All recursive tree conversion (both directions) lives in one `@Component`,
-`PolicyMapper`, so `PolicyService`/`PolicyController` never walk the tree
+`PolicyAssembler`, so `PolicyService`/`PolicyController` never walk the tree
 themselves:
 
 ```java
@@ -888,7 +887,7 @@ a clean JSON error body instead of a raw stack trace.
 
 `PolicyController.update`/`delete` do not currently check `status` before
 acting — e.g. hard-deleting a `PUBLISHED` policy is allowed. Depending on
-audit requirements, consider requiring a policy to be `ARCHIVED` before it
+audit requirements, we could consider requiring a policy to be `ARCHIVED` before it
 can be deleted, rather than allowing a direct delete of a live policy.
 
 ---
@@ -909,7 +908,7 @@ Thrown from:
 - `OperatorEvaluator.apply()` — wrong arity for `BETWEEN`, or a value that
   isn't a list for `IN`/`NOT_IN`/`BETWEEN` (wrapped `ClassCastException`).
 - `PolicyActionApplier` — unknown `actionType`, or a `SET_FIELD` action
-  pointing at a non-existent `InspectionRequest` property.
+  pointing at a non-existent property.
 
 Caught exactly once, at the per-policy loop in
 `PolicyEvaluationService.evaluateFirstMatch` — this is the single point
